@@ -4,50 +4,62 @@ interface PropsToEffects {
   [key: string]: EffectsSet;
 }
 
-const propsToEffects: PropsToEffects = {};
-const dirtyEffects: Effect[] = [];
-let queued = false;
-let currentEffect: Effect | undefined;
-
-function onGet(prop: string) {
-  if (currentEffect) {
-    const effects = propsToEffects[prop] ??
-      (propsToEffects[prop] = new Set<Effect>());
-    effects.add(currentEffect);
-  }
-}
-
-function flush() {
-  while (dirtyEffects.length) {
-    const effect = dirtyEffects.shift();
-    effect?.();
-  }
-}
-
-function onSet<T>(prop: string, _value: T): void {
-  if (propsToEffects[prop]) {
-    for (const effect of propsToEffects[prop]) {
-      if (!dirtyEffects.includes(effect)) {
-        dirtyEffects.push(effect);
-      }
-    }
-    if (!queued) {
-      queued = true;
-      queueMicrotask(() => {
-        queued = false;
-        flush();
-      });
-    }
-  }
-}
-
-export function createEffect(effect: Effect) {
-  currentEffect = effect;
-  effect();
-  currentEffect = undefined;
-}
+const MAX_RECURSION_DEPTH = 30;
 
 export function createState<T extends object>(initialState: T) {
+  const propsToEffects: PropsToEffects = {};
+  const dirtyEffects: Effect[] = [];
+  let queued = false;
+  let currentEffect: Effect | undefined;
+
+  let isFlushing = false;
+  let recursionDepth = 0;
+
+  function onGet(prop: string) {
+    if (currentEffect) {
+      const effects = propsToEffects[prop] ??
+        (propsToEffects[prop] = new Set<Effect>());
+      effects.add(currentEffect);
+    }
+  }
+
+  function flush() {
+    if (isFlushing) return;
+    isFlushing = true;
+    recursionDepth = 0;
+
+    try {
+      while (dirtyEffects.length > 0) {
+        if (recursionDepth > MAX_RECURSION_DEPTH) {
+          console.error("Max recursion depth exceeded");
+          break;
+        }
+
+        const effect = dirtyEffects.shift();
+        effect?.();
+        recursionDepth++;
+      }
+    } finally {
+      queued = false;
+      isFlushing = false;
+      recursionDepth = 0;
+    }
+  }
+
+  function onSet<T>(prop: string, _value: T): void {
+    if (propsToEffects[prop]) {
+      for (const effect of propsToEffects[prop]) {
+        if (!dirtyEffects.includes(effect)) {
+          dirtyEffects.push(effect);
+        }
+      }
+      if (!queued) {
+        queued = true;
+        queueMicrotask(flush);
+      }
+    }
+  }
+
   const handler: ProxyHandler<T> = {
     get(target, prop: string | symbol, receiver) {
       if (typeof prop === "string") {
@@ -64,6 +76,11 @@ export function createState<T extends object>(initialState: T) {
       return true;
     },
   };
+  function createEffect(effect: Effect) {
+    currentEffect = effect;
+    effect();
+    currentEffect = undefined;
+  }
 
-  return new Proxy(initialState, handler);
+  return { state: new Proxy(initialState, handler), createEffect };
 }
