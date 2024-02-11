@@ -39,7 +39,7 @@ Deno.test("recursion depth test", async () => {
 
   try {
     state.a = 5;
-    await Promise.resolve();
+    await Promise.resolve(); // wait for microtask queue to flush
 
     if (!errorLogged) {
       throw new Error(
